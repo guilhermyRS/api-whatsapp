@@ -11,8 +11,8 @@ app.use(express.static('public'));
 app.use(cors());
 
 // Set EJS as templating engine
-app.set('view engine', 'ejs');
-app.set('views', './views');
+const path = require('path');
+app.set('views', path.join(__dirname, 'views'));
 
 // Configuração Supabase
 const supabase = createClient(
