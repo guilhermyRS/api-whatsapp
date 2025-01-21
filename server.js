@@ -1,109 +1,49 @@
 require('dotenv').config();
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode');
-const { createClient } = require('@supabase/supabase-js');
-const { ToastContainer, toast } = require('react-toastify');
 const cors = require('cors');
-const http = require('http');
-const socketIO = require('socket.io');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIO(server);
 
 // Middlewares
 app.use(express.json());
 app.use(express.static('public'));
 app.use(cors());
 
+// Set EJS as templating engine
 app.set('view engine', 'ejs');
 app.set('views', './views');
 
 // Configuração Supabase
 const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_KEY
-);
-
-// Função para criar um delay
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Configuração WhatsApp Web
-const whatsapp = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        args: ['--no-sandbox'],
-    }
-});
-
-// Variável para controlar o estado da conexão
-let isWhatsAppConnected = false;
-
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-    console.log('Cliente conectado ao Socket.IO');
-    
-    // Se o WhatsApp já estiver conectado, emite o evento 'ready'
-    if (isWhatsAppConnected) {
-        socket.emit('ready');
-    }
-});
-
-// Eventos do WhatsApp
-whatsapp.on('qr', async (qr) => {
-    if (!isWhatsAppConnected) {
-        try {
-            const qrImage = await qrcode.toDataURL(qr);
-            io.emit('qr', `<img src="${qrImage}" alt="QR Code" />`);
-        } catch (err) {
-            console.error('Erro ao gerar QR Code:', err);
+    process.env.SUPABASE_KEY,
+    {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false
         }
     }
-});
+);
 
-whatsapp.on('ready', () => {
-    console.log('Cliente WhatsApp está pronto!');
-    isWhatsAppConnected = true;
-    io.emit('ready');
-    toast.success('WhatsApp conectado com sucesso!');
-});
-
-whatsapp.on('authenticated', () => {
-    console.log('WhatsApp autenticado!');
-    isWhatsAppConnected = true;
-    io.emit('authenticated');
-    toast.success('WhatsApp autenticado com sucesso!');
-});
-
-whatsapp.on('auth_failure', () => {
-    console.error('Falha na autenticação do WhatsApp');
-    isWhatsAppConnected = false;
-    toast.error('Falha na autenticação do WhatsApp');
-});
-
-whatsapp.on('disconnected', () => {
-    console.log('WhatsApp desconectado');
-    isWhatsAppConnected = false;
-    toast.warn('WhatsApp desconectado');
-});
-
-whatsapp.initialize();
-
-// Função para enviar mensagem WhatsApp
+// Função para simular envio de mensagem (salva no Supabase para processamento posterior)
 async function enviarMensagemWhatsApp(telefone, nome) {
     try {
-        const numeroWhatsApp = `${telefone}@c.us`;
-        const mensagem = `Olá ${nome}! Seja bem-vindo(a) à nossa igreja! Estamos muito felizes em ter você conosco. 🙏`;
-        
-        await delay(2000);
-        
-        await whatsapp.sendMessage(numeroWhatsApp, mensagem);
-        toast.success(`Mensagem enviada com sucesso para ${nome}`);
+        const { data, error } = await supabase
+            .from('mensagens_pendentes')
+            .insert([
+                {
+                    telefone,
+                    nome,
+                    mensagem: `Olá ${nome}! Seja bem-vindo(a) à nossa igreja! Estamos muito felizes em ter você conosco. 🙏`,
+                    status: 'pendente'
+                }
+            ]);
+
+        if (error) throw error;
         return true;
     } catch (error) {
-        console.error('Erro ao enviar mensagem:', error);
-        toast.error(`Erro ao enviar mensagem para ${nome}: ${error.message}`);
+        console.error('Erro ao agendar mensagem:', error);
         return false;
     }
 }
@@ -111,20 +51,18 @@ async function enviarMensagemWhatsApp(telefone, nome) {
 // Função para validar telefone
 function validarTelefone(telefone) {
     const telefoneNormalizado = telefone.replace(/\D/g, '');
-    if (telefoneNormalizado.length < 10 || telefoneNormalizado.length > 11) {
-        return false;
-    }
-    return true;
+    return telefoneNormalizado.length >= 10 && telefoneNormalizado.length <= 11;
 }
 
-// Suas rotas existentes
+// Rota principal - formulário de cadastro
 app.get('/', (req, res) => {
     res.render('index');
 });
 
+// Rota para listar membros
 app.get('/membros', async (req, res) => {
     try {
-        console.log('Buscando membros do Supabase...');
+        console.log('Iniciando busca de membros...');
         
         const { data: membros, error } = await supabase
             .from('membros')
@@ -132,10 +70,13 @@ app.get('/membros', async (req, res) => {
             .order('created_at', { ascending: false });
 
         if (error) {
-            console.error('Erro do Supabase:', error);
+            console.error('Erro ao buscar membros:', error);
             throw error;
         }
 
+        console.log('Membros encontrados:', membros);
+
+        // Formatando os dados
         const membrosFormatados = membros.map(membro => ({
             ...membro,
             telefone_formatado: membro.telefone.replace(/(\d{2})(\d{2})(\d{5})(\d{4})/, '+$1 ($2) $3-$4'),
@@ -144,13 +85,13 @@ app.get('/membros', async (req, res) => {
 
         res.render('membros', { 
             membros: membrosFormatados,
-            error: null 
+            error: null
         });
     } catch (error) {
         console.error('Erro ao buscar membros:', error);
         res.render('membros', { 
             membros: [], 
-            error: 'Erro ao carregar lista de membros: ' + error.message 
+            error: 'Erro ao carregar lista de membros: ' + error.message
         });
     }
 });
@@ -201,13 +142,14 @@ app.post('/api/cadastro', async (req, res) => {
 
         if (error) throw error;
 
-        const mensagemEnviada = await enviarMensagemWhatsApp(telefoneCompleto, nome);
+        // Agenda a mensagem para envio posterior
+        const mensagemAgendada = await enviarMensagemWhatsApp(telefoneCompleto, nome);
 
         res.json({
             success: true,
             redirectUrl: '/membros',
             message: 'Cadastro realizado com sucesso!',
-            whatsappEnviado: mensagemEnviada,
+            whatsappEnviado: mensagemAgendada,
             data
         });
 
@@ -223,17 +165,15 @@ app.post('/api/cadastro', async (req, res) => {
 // Middleware de erro
 app.use((err, req, res, next) => {
     console.error(err.stack);
-    toast.error('Erro interno do servidor');
     res.status(500).json({
         message: 'Erro interno do servidor',
         error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
 });
 
-const HOST = '0.0.0.0';
 const PORT = process.env.PORT || 3000;
-
-// Use server.listen em vez de app.listen
-server.listen(PORT, HOST, () => {
+app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
 });
+
+module.exports = app; // Importante para a Vercel
